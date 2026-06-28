@@ -6,6 +6,7 @@ import {
   Res,
   StreamableFile,
 } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { ParserService } from '../parser/parser.service';
 import { TailorService } from './tailor.service';
 import { ExporterService } from '../exporter/exporter.service';
@@ -21,6 +22,7 @@ export class TailorController {
     private readonly exporterService: ExporterService,
   ) {}
 
+  @Throttle({ default: { limit: 2, ttl: 60000 } })
   @Post('tailor')
   async tailorResume(
     @Body('uploadId') uploadId: string,

@@ -5,18 +5,40 @@ import {
   UploadedFile,
   Body,
   BadRequestException,
+  ParseFilePipe,
+  MaxFileSizeValidator,
+  FileTypeValidator,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
+import { Throttle } from '@nestjs/throttler';
 import { UploadService } from './upload.service';
 
 @Controller('upload')
 export class UploadController {
   constructor(private readonly uploadService: UploadService) {}
 
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
   @Post('chunk')
-  @UseInterceptors(FileInterceptor('chunk'))
+  @UseInterceptors(
+    FileInterceptor('chunk', {
+      limits: {
+        fileSize: 5 * 1024 * 1024, // 5MB limit
+      },
+    }),
+  )
   async uploadChunk(
-    @UploadedFile() file: Express.Multer.File,
+    @UploadedFile(
+      new ParseFilePipe({
+        validators: [
+          new MaxFileSizeValidator({ maxSize: 5 * 1024 * 1024 }),
+          new FileTypeValidator({
+            fileType: 'application/pdf',
+            skipMagicNumbersValidation: true,
+          }),
+        ],
+      }),
+    )
+    file: Express.Multer.File,
     @Body('uploadId') uploadId: string,
     @Body('chunkIndex') chunkIndexStr: string,
     @Body('totalChunks') totalChunksStr: string,
