@@ -73,9 +73,15 @@ export class UploadService {
     }
 
     await new Promise<void>((resolve, reject) => {
-      writeStream.end((err: any) => {
+      writeStream.end((err: unknown) => {
         if (err) {
-          reject(err instanceof Error ? err : new Error(String(err)));
+          let errMsg = 'Unknown write stream error';
+          if (err instanceof Error) {
+            errMsg = err.message;
+          } else if (typeof err === 'string') {
+            errMsg = err;
+          }
+          reject(err instanceof Error ? err : new Error(errMsg));
         } else {
           resolve();
         }

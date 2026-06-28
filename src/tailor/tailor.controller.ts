@@ -10,6 +10,7 @@ import { Throttle } from '@nestjs/throttler';
 import { ParserService } from '../parser/parser.service';
 import { TailorService } from './tailor.service';
 import { ExporterService } from '../exporter/exporter.service';
+import { TailorResumeDto } from './dto/tailor-resume.dto';
 import * as path from 'path';
 import * as fs from 'fs';
 import type { Response } from 'express';
@@ -25,17 +26,10 @@ export class TailorController {
   @Throttle({ default: { limit: 2, ttl: 60000 } })
   @Post('tailor')
   async tailorResume(
-    @Body('uploadId') uploadId: string,
-    @Body('jobDescription') jobDescription: string,
-    @Body('additionalInstructions') additionalInstructions: string,
+    @Body() body: TailorResumeDto,
     @Res({ passthrough: true }) res: Response,
   ): Promise<StreamableFile> {
-    if (!uploadId) {
-      throw new BadRequestException('uploadId is required');
-    }
-    if (!jobDescription) {
-      throw new BadRequestException('jobDescription is required');
-    }
+    const { uploadId, jobDescription, additionalInstructions } = body;
 
     const filePath = path.join(process.cwd(), 'uploads', `${uploadId}.pdf`);
     if (!fs.existsSync(filePath)) {

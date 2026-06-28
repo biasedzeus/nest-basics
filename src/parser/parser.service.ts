@@ -6,18 +6,7 @@ import {
 import * as fs from 'fs';
 import * as pdf from 'pdf-parse';
 
-interface PDFParseResult {
-  text: string;
-}
-
-interface PDFParseClassInstance {
-  getText(): Promise<PDFParseResult>;
-}
-
-interface PDFParseModule {
-  PDFParse?: new (options: { data: Buffer }) => PDFParseClassInstance;
-  default?: (dataBuffer: Buffer) => Promise<PDFParseResult>;
-}
+import { PDFParseModule, PDFParseResult } from '../types/pdf-parse.types';
 
 @Injectable()
 export class ParserService {

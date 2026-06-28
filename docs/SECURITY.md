@@ -1,6 +1,6 @@
 # Security Hardening Documentation
 
-This document explains the security architecture and defenses configured in the backend to protect operational costs, prevent memory/CPU exhaustion, and block malicious attacks (DoS/spam).
+This document explains the security architecture, production-ready middlewares, and input validators configured in the backend to protect operational costs, defend against Denial of Service (DoS) attacks, secure communication channels, and sanitize input payloads.
 
 ---
 
@@ -8,64 +8,82 @@ This document explains the security architecture and defenses configured in the 
 
 ```mermaid
 graph TD
-    Request[Incoming HTTP Request] -->|1. Rate Limit Check| ThrottlerGuard[ThrottlerGuard]
-    ThrottlerGuard -->|2. Body size limit| ExpressBodyParser[Express Body Parser 500KB limit]
-    ExpressBodyParser -->|3. File validation| ParseFilePipe[ParseFilePipe / Multer Limits 5MB limit]
-    ParseFilePipe -->|4. Connection timeout watch| TimeoutInterceptor[TimeoutInterceptor 20s cap]
-    TimeoutInterceptor -->|5. Controller execution| Controller[Controller / Service Logic]
+    Request[Incoming HTTP Request] -->|1. CORS Policy Check| Cors[Dynamic CORS Origin check]
+    Cors -->|2. Rate Limit Check| ThrottlerGuard[ThrottlerGuard]
+    ThrottlerGuard -->|3. Security Headers| Helmet[Helmet Headers Protection]
+    Helmet -->|4. Request Size Limit| ExpressBodyParser[Express Body Parser 500KB cap]
+    ExpressBodyParser -->|5. Payload Validation| ValidationPipe[ValidationPipe Whitelist/DTO]
+    ValidationPipe -->|6. File validation| ParseFilePipe[ParseFilePipe / Multer Limits 5MB cap]
+    ParseFilePipe -->|7. Timeout Watch| TimeoutInterceptor[TimeoutInterceptor 20s cap]
+    TimeoutInterceptor -->|8. Controller execute| Controller[Controller Logic]
 ```
 
 ---
 
-## 🛠️ Security Safeguards
+## 🛠️ Security Safeguards & Production Middlewares
 
-### 1. API Rate Limiting (Throttling)
-Implemented via `@nestjs/throttler` to prevent endpoint abuse.
-*   **Global Provider:** Registered as a global guard in `app.module.ts`:
+### 1. Dynamic CORS (Cross-Origin Resource Sharing)
+Restricts client-side scripting access exclusively to trusted, defined domains:
+*   **Production Checks:** Reads from the `ALLOWED_ORIGINS` environment variable (comma-separated list of live frontend domains).
+*   **Development Access:** Automatically bypasses checks if `NODE_ENV === 'development'` to facilitate trouble-free localhost paired development.
+*   **Postman/Mobile Support:** Allows requests with no origin headers (such as server-to-server calls or mobile clients).
+*   **Header Policies:** Enforces strict method and header permissions while allowing cookie-sharing credentials:
     ```typescript
-    {
-      provide: APP_GUARD,
-      useClass: ThrottlerGuard,
-    }
+    methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
+    credentials: true,
+    allowedHeaders: 'Content-Type, Accept, Authorization',
     ```
-*   **Layered Limits:**
-    *   `short`: Caps requests to **2 per second** per IP to protect against rapid double-clicks and script storms.
-    *   `medium`: General API limit capping requests to **20 per minute** per IP.
-*   **Endpoint Overrides:**
-    *   `/resume/tailor`: Decorated with `@Throttle({ default: { limit: 2, ttl: 60000 } })` (max 2 per minute per IP) to guard CPU-intensive Puppeteer and paid LLM endpoints.
-    *   `/upload/chunk`: Decorated with `@Throttle({ default: { limit: 10, ttl: 60000 } })` (max 10 per minute per IP) to defend against disk-write exhaustion.
 
-### 2. Preventing Payload Bloat (DoS Protection)
-*   **Request Body Capping:** Configured in `main.ts` using Express body-parsers to reject any JSON or URL-encoded body larger than **500 KB** (returns `413 Payload Too Large`):
+### 2. HTTP Headers Hardening (Helmet)
+Uses the `helmet` middleware in `main.ts` to automatically configure and inject HTTP security headers, protecting the application against common vulnerabilities like:
+*   **Clickjacking:** Enforces Frame Options.
+*   **Cross-Site Scripting (XSS):** Enforces XSS Filter headers and blocks content-type sniffing.
+*   **Content Security Policy (CSP):** Sets strong browser resource fetch rules:
     ```typescript
-    app.use(express.json({ limit: '500kb' }));
-    app.use(express.urlencoded({ extended: true, limit: '500kb' }));
+    app.use(helmet({
+      crossOriginEmbedderPolicy: false,
+      contentSecurityPolicy: true,
+    }));
     ```
-*   **File Upload Size Caps:** Capped at two levels on `/upload/chunk`:
-    1.  **Multer Interceptor Level:** Capped at **5 MB** to drop large chunks before memory allocation:
-        ```typescript
-        FileInterceptor('chunk', { limits: { fileSize: 5 * 1024 * 1024 } })
-        ```
-    2.  **NestJS Validator Level:** Capped using `MaxFileSizeValidator` for double-checking:
-        ```typescript
-        new MaxFileSizeValidator({ maxSize: 5 * 1024 * 1024 })
-        ```
 
-### 3. Strict File Type Guarding
-*   **MIME Validation:** Restricts uploads exclusively to PDF files via `FileTypeValidator({ fileType: 'application/pdf' })`.
-*   **Chunk Support:** Since uploading chunks divides a PDF file into pieces, subsequent chunks do not start with the standard `%PDF` binary magic numbers (which causes binary type-checks to fail). Setting `skipMagicNumbersValidation: true` bypasses magic number checks and validates solely on the client-provided MIME metadata, allowing resumable chunking to succeed safely.
+### 3. Response Compression
+Uses `compression` to Gzip/Brotli compress response payloads before sending them over the wire. This drastically reduces transit times and bandwidth costs for large payloads (such as compiled resume text streams or JSON structures).
 
-### 4. Connection Timeout Limits
-*   **RxJS Interceptor:** Built `TimeoutInterceptor` in [timeout.interceptor.ts](file:///Users/bhanusingh/Documents/personal_projects/nest-js/nest-basics/backend/src/common/interceptors/timeout.interceptor.ts) to force-kill connections that hang on Puppeteer renders or third-party LLM endpoints:
-    ```typescript
-    return next.handle().pipe(
-      timeout(20000), // 20-second connection cap
-      catchError((err: unknown) => {
-        if (err instanceof TimeoutError) {
-          return throwError(() => new RequestTimeoutException('Operation took too long to respond.'));
-        }
-        return throwError(() => err);
-      }),
-    );
-    ```
-*   **Global Registration:** Registered in `main.ts` using `app.useGlobalInterceptors(new TimeoutInterceptor())` to protect all endpoints by default.
+### 4. Input Sanitization & Validation (ValidationPipe)
+Enforces a global `ValidationPipe` to inspect incoming payloads:
+*   **Whitelist Filtering:** Automatically strips out any extra unmapped properties sent by client requests.
+*   **Strict Blocking:** Throws a `400 Bad Request` if unmapped properties are present (`forbidNonWhitelisted: true`), preventing SQL/code injection attempts.
+*   **Explicit Type Transformation:** Automatically casts request strings to appropriate numbers, booleans, or DTO types.
+
+```typescript
+app.useGlobalPipes(
+  new ValidationPipe({
+    whitelist: true,
+    forbidNonWhitelisted: true,
+    transform: true,
+  }),
+);
+```
+
+### 5. API Rate Limiting (Throttling)
+Protects the API gateway from brute-force request storms:
+*   **Provider:** Global `ThrottlerGuard` provider (`APP_GUARD`) in `app.module.ts`.
+*   **Tiered Config:**
+    *   `short`: Caps requests to **2 per second** per IP (prevents double-clicks).
+    *   `medium`: General API limit of **20 per minute** per IP.
+*   **Controller Override Limits:**
+    *   `/resume/tailor`: Strictly capped to **2 requests per minute** per IP.
+    *   `/upload/chunk`: Capped to **10 requests per minute** per IP.
+
+### 6. Payload size limits
+*   **Express Body Limit:** Restricts standard JSON/urlencoded request bodies to **500 KB** max.
+*   **File Limits:** Capped at **5 MB** on `/upload/chunk` using Multer constraints and a NestJS `MaxFileSizeValidator`.
+*   **Validation Pipe:** `FileTypeValidator({ fileType: 'application/pdf', skipMagicNumbersValidation: true })` restricts chunks to PDF mimetypes without failing on partial chunk magic numbers.
+
+### 7. Timeout Defenses
+*   **RxJS Interceptor:** Automatically cuts off any request taking longer than **20 seconds** with a `408 Request Timeout` exception.
+
+### 8. Static Type Hardening & ESLint Restrictions
+*   **Centralized Types Folder:** All type and interface definitions (for files, parsers, and requests) are grouped in a dedicated folder: `src/types/` (includes `pdf-parse.types.ts`, `upload.types.ts`, and `tailor.types.ts`).
+*   **No-Any Rule Enforcement:** Configured the `@typescript-eslint/no-explicit-any` ESLint rule as a strict `"error"`, forbidding any use of the `any` type.
+*   **Base-to-String Guarding:** Checked and type-guarded all catches of `unknown` exceptions to prevent unsafe object stringification, conforming to `@typescript-eslint/no-base-to-string`.

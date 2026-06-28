@@ -10,6 +10,7 @@ The Tailor and Exporter modules process Job Descriptions, tailor candidate resum
     *   [tailor.module.ts](file:///Users/bhanusingh/Documents/personal_projects/nest-js/nest-basics/backend/src/tailor/tailor.module.ts): Connects parser, exporter, and tailor logic.
     *   [tailor.controller.ts](file:///Users/bhanusingh/Documents/personal_projects/nest-js/nest-basics/backend/src/tailor/tailor.controller.ts): Exposes `POST /resume/tailor` and streams the PDF back.
     *   [tailor.service.ts](file:///Users/bhanusingh/Documents/personal_projects/nest-js/nest-basics/backend/src/tailor/tailor.service.ts): Formulates the ATS prompts and routes LLM requests.
+    *   [tailor-resume.dto.ts](file:///Users/bhanusingh/Documents/personal_projects/nest-js/nest-basics/backend/src/tailor/dto/tailor-resume.dto.ts): Defines the validated body schema layout.
 *   **Exporter Module (`src/exporter/`)**:
     *   [exporter.module.ts](file:///Users/bhanusingh/Documents/personal_projects/nest-js/nest-basics/backend/src/exporter/exporter.module.ts): Bundles and exports PDF generation services.
     *   [exporter.service.ts](file:///Users/bhanusingh/Documents/personal_projects/nest-js/nest-basics/backend/src/exporter/exporter.service.ts): Translates Markdown to HTML, styles the layout, and invokes Puppeteer to render the PDF.
@@ -22,30 +23,51 @@ The end-to-end tailoring and exporting pipeline operates as follows:
 
 ```mermaid
 graph TD
-    Request[POST /resume/tailor] -->|1. Extract text| ParserService
-    ParserService -->|2. Raw resume text| TailorController
-    TailorController -->|3. Formulate RAG prompt| TailorService
-    TailorService -->|4. Call LLM| LLM[Gemini 2.0 Flash / OpenAI]
-    LLM -->|5. Tailored Markdown| TailorService
-    TailorService -->|6. Convert MD to HTML| ExporterService
-    ExporterService -->|7. Launch Puppeteer| HeadlessBrowser[Headless Chrome]
-    HeadlessBrowser -->|8. Compile PDF buffer| ExporterService
-    ExporterService -->|9. Return Buffer| TailorController
-    TailorController -->|10. StreamableFile| Client[Client download]
+    Request[POST /resume/tailor] -->|1. Validate Body| ValidationPipe[ValidationPipe / TailorResumeDto]
+    ValidationPipe -->|2. Extract text| ParserService
+    ParserService -->|3. Raw resume text| TailorController
+    TailorController -->|4. Formulate RAG prompt| TailorService
+    TailorService -->|5. Call LLM| LLM[Gemini 2.0 Flash / OpenAI]
+    LLM -->|6. Tailored Markdown| TailorService
+    TailorService -->|7. Convert MD to HTML| ExporterService
+    ExporterService -->|8. Launch Puppeteer| HeadlessBrowser[Headless Chrome]
+    HeadlessBrowser -->|9. Compile PDF buffer| ExporterService
+    ExporterService -->|10. Return Buffer| TailorController
+    TailorController -->|11. StreamableFile| Client[Client download]
 ```
 
 ---
 
 ## 🛠️ Implementation Details
 
-### 1. Dual-Client AI Service
+### 1. Request Body DTO Validation
+Input parameters are strictly type checked and sanitized before execution to prevent memory exhaustion or unexpected values:
+```typescript
+export class TailorResumeDto {
+  @IsString()
+  @IsNotEmpty()
+  uploadId: string;
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(10000)
+  jobDescription: string;
+
+  @IsString()
+  @IsOptional()
+  @MaxLength(2000)
+  additionalInstructions?: string;
+}
+```
+
+### 2. Dual-Client AI Service
 The `TailorService` supports both **Gemini** (via `@google/genai`) and **OpenAI** (via `openai`). The service checks configured environment variables on instantiation and selects the appropriate provider:
 
 *   **Gemini Client (Primary):** Initializes if `GEMINI_API_KEY` is present. Utilizes the high-speed `gemini-2.0-flash` model.
 *   **OpenAI Client (Fallback):** Initializes if `OPENAI_API_KEY` is present. Utilizes `gpt-4o-mini`.
 *   **Prompt Formulation:** Enforces strict Markdown output. Clean helper functions strip any markdown code block wrappers (like ` ```markdown `) returned by the models to output raw, valid markdown content.
 
-### 2. Puppeteer HTML-to-PDF Conversion
+### 3. Puppeteer HTML-to-PDF Conversion
 The `ExporterService` translates Markdown into an A4 PDF via headless browser automation:
 1.  **Markdown Parse:** Uses `marked` to generate structured HTML nodes.
 2.  **CSS Injection:** Wraps the content in a custom, ATS-friendly stylesheet utilizing standard margins (`20mm 15mm 20mm 15mm`), default fonts (`Arial`/`Helvetica`), and strict print page-break guidelines (`page-break-inside: avoid;`).
