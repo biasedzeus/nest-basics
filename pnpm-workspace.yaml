@@ -1,0 +1,4 @@
+onlyBuiltDependencies:
+  - '@google/genai'
+  - protobufjs
+  - puppeteer
